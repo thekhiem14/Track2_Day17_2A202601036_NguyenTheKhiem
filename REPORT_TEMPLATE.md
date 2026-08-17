@@ -102,13 +102,23 @@ pipeline dừng khi gặp bản ghi lỗi?
 
 ## 4 · *(mở rộng, không bắt buộc)* Bài trong EXTRA.md
 
+### Bài A — Query dashboard chậm
+
 | | |
 |---|---|
-| **Bài đã làm** | A |
 | **Triệu chứng** | Dashboard "Sức khoẻ hội thoại theo khách hàng" chạy 38 giây (trước đó chỉ 2 giây), dù không ai sửa `queries/dashboard.sql`. |
 | **Nguyên nhân** | Dataset `data/gold_events/` gồm 5.000 file Parquet nhỏ, không partition, thứ tự hàng ngẫu nhiên (**small-file problem**): mỗi file chỉ ~26 hàng thật nhưng engine đọc theo lô cố định (~1.000 hàng/file), nên phải trả phí đọc 5.000.000 hàng dù chỉ có 130.683 hàng thật tồn tại. Đồng thời điều kiện lọc ngày bị bọc trong `strftime(event_time, '%Y-%m-%d')` — cột bị bọc trong hàm (**không sargable**) nên engine không so được với tên thư mục/thống kê min-max, dù có partition cũng vô ích. |
 | **Cách khắc phục** | `tools/compact.py`: viết lại dataset với `PARTITION_BY (event_date)` (14 giá trị phân biệt → 14 thư mục, đủ lớn mỗi thư mục — không dùng `customer_name` vì 650 giá trị sẽ tái tạo lại small-file problem), `ORDER BY customer_id` (gom hàng cùng khách liền nhau để min/max row-group có ích), `ROW_GROUP_SIZE 100` (mặc định 122.880 lớn hơn nhiều so với ~9.334 hàng/ngày, nếu để mặc định cả ngày gói vào đúng 1 row group thì sắp xếp vô nghĩa). `queries/dashboard.sql`: trỏ sang dataset mới, bật `hive_partitioning=true`, bỏ `strftime(...)` — so trực tiếp cột `event_date` (đã có sẵn, không cần tính lại từ `event_time`). |
 | **Bằng chứng** | rows scanned: **5.000.000 → 9.324** (giảm 536×, yêu cầu ≥10×) · files: **5.000 → 14** · result hash không đổi (`4379e4c5d9f3`) · thời gian: 26,6s → 0,6s (tham khảo) |
+
+### Bài B — Consumer gặp sự cố giữa batch
+
+| | |
+|---|---|
+| **Triệu chứng** | `make crash-test` giết consumer giữa batch (lô 7/40); trước khi sửa, consumer đang ở ngữ nghĩa **at-most-once** (`commit()` đứng trước `write_batch()`) → dữ liệu của lô đang xử lý khi crash sẽ **mất vĩnh viễn**, vì offset đã dịch trước khi dữ liệu kịp ghi. |
+| **Nguyên nhân** | Thứ tự thao tác trong `consume()` sai: ghi nhận offset (`commit()`) **trước** khi dữ liệu thực sự được ghi xuống đĩa (`write_batch()`). Nếu tiến trình chết ở giữa hai bước, hệ thống đã "hứa" là xử lý xong lô đó (offset dịch) nhưng thực tế chưa — khi khởi động lại, consumer đọc từ offset mới, bỏ qua vĩnh viễn đúng lô bị mất. |
+| **Cách khắc phục** | (1) Đảo thứ tự: `write_batch()` **trước**, `consumer.commit()` **sau** → chuyển sang **at-least-once** (crash giữa chừng sẽ làm lô đó bị đọc lại/replay ở lần sau, không còn mất dữ liệu). (2) Thêm `PRIMARY KEY` trên `event_id` trong DDL. (3) Đổi `INSERT` thuần thành `INSERT ... ON CONFLICT (event_id) DO UPDATE` — idempotent write, để việc phát lại một message không tạo thêm hàng mà chỉ ghi đè bằng nội dung mới nhất (chọn `DO UPDATE` thay vì `DO NOTHING` vì phải phản ánh đúng bản cập nhật mới nhất nếu nguồn thật sự gửi lại `event_id` với nội dung đã đổi, không chỉ do crash). |
+| **Bằng chứng** | A (chạy thẳng): 20.000 hàng / 20.000 event_id · B (bị giết ở lô 7): thoát mã 137, offset dừng ở 3.000 · C (khởi động lại): ghi tiếp 17.000 message (lô 7 bị phát lại) → tổng **20.000 hàng / 20.000 event_id**, không mất không trùng · `make crash-test`: **ĐẠT ✓** |
 
 ---
 
