@@ -30,6 +30,9 @@
   silver_tickets.priority ∈ 1..4, không NULL  ✓ sạch
   quarantine_tickets đúng số bản ghi lỗi      ✓ 312 / 312
   gold_training_set: 1 hàng / 1 ticket        ✓ không lặp
+  dashboard rows scanned                      ✓ 5,000,000 → 9,324 (536.3×, cần ≥ 10×)
+    số file parquet                           ✓ 5,000 → 14
+    kết quả truy vấn không đổi                ✓
   DAG: catchup / max_active_runs              ✓ False / 1
 
   TỔNG KẾT
@@ -42,7 +45,7 @@
   4/4 tiêu chí đạt
 ```
 
-*(dòng "dashboard rows scanned" / "số file parquet" trong output thật không đưa vào đây — đó là kiểm tra riêng cho Bài A của EXTRA.md, không thuộc 3 nhiệm vụ chính, xem Mục 4.)*
+*("dashboard rows scanned" / "số file parquet" là kiểm tra riêng cho Bài A của EXTRA.md, không tính vào 4 tiêu chí chính — chi tiết ở Mục 4.)*
 
 </details>
 
@@ -101,10 +104,11 @@ pipeline dừng khi gặp bản ghi lỗi?
 
 | | |
 |---|---|
-| **Bài đã làm** | A / B / không làm |
-| **Nguyên nhân** | |
-| **Cách khắc phục** | |
-| **Bằng chứng** | |
+| **Bài đã làm** | A |
+| **Triệu chứng** | Dashboard "Sức khoẻ hội thoại theo khách hàng" chạy 38 giây (trước đó chỉ 2 giây), dù không ai sửa `queries/dashboard.sql`. |
+| **Nguyên nhân** | Dataset `data/gold_events/` gồm 5.000 file Parquet nhỏ, không partition, thứ tự hàng ngẫu nhiên (**small-file problem**): mỗi file chỉ ~26 hàng thật nhưng engine đọc theo lô cố định (~1.000 hàng/file), nên phải trả phí đọc 5.000.000 hàng dù chỉ có 130.683 hàng thật tồn tại. Đồng thời điều kiện lọc ngày bị bọc trong `strftime(event_time, '%Y-%m-%d')` — cột bị bọc trong hàm (**không sargable**) nên engine không so được với tên thư mục/thống kê min-max, dù có partition cũng vô ích. |
+| **Cách khắc phục** | `tools/compact.py`: viết lại dataset với `PARTITION_BY (event_date)` (14 giá trị phân biệt → 14 thư mục, đủ lớn mỗi thư mục — không dùng `customer_name` vì 650 giá trị sẽ tái tạo lại small-file problem), `ORDER BY customer_id` (gom hàng cùng khách liền nhau để min/max row-group có ích), `ROW_GROUP_SIZE 100` (mặc định 122.880 lớn hơn nhiều so với ~9.334 hàng/ngày, nếu để mặc định cả ngày gói vào đúng 1 row group thì sắp xếp vô nghĩa). `queries/dashboard.sql`: trỏ sang dataset mới, bật `hive_partitioning=true`, bỏ `strftime(...)` — so trực tiếp cột `event_date` (đã có sẵn, không cần tính lại từ `event_time`). |
+| **Bằng chứng** | rows scanned: **5.000.000 → 9.324** (giảm 536×, yêu cầu ≥10×) · files: **5.000 → 14** · result hash không đổi (`4379e4c5d9f3`) · thời gian: 26,6s → 0,6s (tham khảo) |
 
 ---
 
