@@ -31,7 +31,9 @@
 
 {{ config(
     materialized     = 'incremental',
-    on_schema_change = 'fail'
+    on_schema_change = 'fail',
+    unique_key = ['event_date', 'customer_id'],
+    incremental_strategy = 'merge'
 ) }}
 
 select
@@ -49,7 +51,7 @@ select
 from {{ ref('silver_events') }}
 
 {% if is_incremental() %}
-where event_date > (select max(event_date) from {{ this }})
+where event_date > (select max(event_date) from {{ this }}) - interval 3 day
 {% endif %}
 
 group by 1, 2, 3, 4
