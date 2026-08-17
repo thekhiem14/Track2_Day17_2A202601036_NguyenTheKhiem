@@ -1,7 +1,7 @@
 .venv/
 __pycache__/
 *.pyc
-
+.venv
 # kho dữ liệu và seed đều được sinh lại bằng `make setup`
 warehouse.duckdb
 warehouse.duckdb.wal
