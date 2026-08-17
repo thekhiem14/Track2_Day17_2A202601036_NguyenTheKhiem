@@ -35,7 +35,15 @@
 
 {{ config(materialized = 'table') }}
 
-with ranked as (
+with source_filtered as (
+
+    select *
+    from {{ source('bronze', 'bronze_tickets_cdc') }}
+    where {{ normalize_priority('priority_raw') }} is not null   -- loại BẢN GHI hỏng, trước khi xếp hạng
+
+),
+
+ ranked as (
 
     select
         *,
@@ -44,7 +52,7 @@ with ranked as (
             partition by ticket_id
             order by event_time desc, cdc_seq desc
         ) as _rn
-    from {{ source('bronze', 'bronze_tickets_cdc') }}
+    from source_filtered          
 
 ),
 
